@@ -1,0 +1,456 @@
+---
+title: "Predicting Mental Illness History Using Machine Learning: A Comparative Analysis of Classification Models"
+subtitle: "DA5030"
+author: "Trisha Gilla"
+date: "Fall 2025 Semester"
+output:
+  html_document:
+    code_download: true
+    fig_caption: yes
+    df_print: kable
+    theme: lumen
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+# Introduction
+
+> Data Source: The dataset used for this project is the Depression Dataset obtained from Kaggle, created by Anthony Therrien. It is publicly available at:
+https://www.kaggle.com/datasets/anthonytherrien/depression-dataset
+
+> Project Goal: The goal of this project is to build and compare several machine learning models to predict whether an individual has a history of mental illness based on lifestyle, demographic, and behavioral characteristics. Using features such as sleep quality, diet, physical activity, smoking status, alcohol consumption, chronic conditions, and income, the project aims to evaluate how well these non-clinical factors can be used to detect mental illness risk.
+Following the CRISP-DM framework, the project includes data exploration, cleaning, handling class imbalance, encoding and scaling predictors, and training multiple classification models (Logistic Regression, Decision Trees, Random Forests, and k-Nearest Neighbors). Model performance is evaluated using accuracy, sensitivity, specificity, and F1-score to determine how effectively each algorithm identifies individuals with a history of mental illness.
+Because mental health is complex and difficult to infer from lifestyle factors alone, the project also examines the limitations of using such data for prediction. By comparing models and analyzing their weaknesses, especially in detecting the minority class ("Yes"), the project highlights the importance of data quality, feature strength, and class-balancing techniques for improving future predictions.
+
+## Data Understanding
+### Load Libraries and Packages
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr) 
+library(ggplot2) 
+library(caret) 
+library(rpart) 
+library(tidyverse)
+```
+
+### Load Dataset
+
+```{r, message=FALSE, warning=FALSE}
+csv_file <- "~/Documents/DA5030/GillaT.DA5030.Project/depression_data.csv"
+
+df <- read.csv(csv_file)
+```
+
+### Preview and Structure
+
+```{r, message=FALSE, warning=FALSE}
+# Preview sample data 
+head(df) 
+
+# Preview structure 
+str(df)
+```
+
+This information guides the upcoming data cleaning steps by revealing potential problems such as missing values, inconsistent categories, or incorrect data types. It provides the foundation for ensuring that the dataset is properly prepared for machine learning.
+
+### Check Missing Data
+
+```{r, message=FALSE, warning=FALSE}
+# Count standard missing values
+colSums(is.na(df))
+```
+
+All columns show zero `NA` values, meaning there are no standard missing entries. The next step is to check for non-standard missing values (such as empty strings or symbols) and then continue with other data quality checks like duplicates and irrelevant features.
+
+```{r, message=FALSE, warning=FALSE}
+# Check for non-standard missing indicators
+sapply(df, function(x) sum(x == "" | x == " " | x == "?" | x == "NA"))
+```
+
+The results show zero empty strings or placeholder symbols in all columns, meaning the dataset does not contain any non-standard missing values. With missingness fully ruled out, the next step is to continue evaluating data quality by checking for duplicate records.
+
+### Check Duplicates
+
+```{r, message=FALSE, warning=FALSE}
+# Check for duplicate rows
+sum(duplicated(df))
+```
+
+The result indicates that the dataset contains no duplicate rows. Since all observations are unique, no further action is required for duplicate removal, and the data quality check can proceed to evaluating irrelevant or non-predictive features.
+
+### Remove Irrelevant or Non-Predictive Features
+
+```{r, message=FALSE, warning=FALSE}
+# Remove non-predictive identifier column
+df <- df %>% select(-Name)
+```
+
+The `Name` column is removed because it does not contain meaningful predictive information for machine learning. Eliminating non-informative identifiers reduces noise in the dataset and improves the efficiency and accuracy of subsequent modeling steps.
+
+### Convert the Target to a Factor
+
+```{r, message=FALSE, warning=FALSE}
+# Convert Target Variable to Factor
+df$History.of.Mental.Illness <- factor(df$History.of.Mental.Illness, levels = c("No", "Yes"))
+```
+
+The target variable is converted to a factor so that machine learning algorithms treat it as a categorical outcome rather than a text string. Classification methods such as logistic regression, decision trees, random forests, and caret’s training functions require the response variable to be a factor in order to correctly model a “Yes/No” prediction problem. Without converting it, R may interpret the target as a character vector, which would prevent classification models from running properly.
+
+### Check Target Distribution
+
+```{r, message=FALSE, warning=FALSE}
+# Check distribution of the target variable
+ggplot(df, aes(x = History.of.Mental.Illness, fill = History.of.Mental.Illness)) +
+geom_bar() +
+labs(title = "Distribution of History of Mental Illness",
+x = "History of Mental Illness",
+y = "Count") +
+theme_minimal()
+```
+
+The plot shows that the “No” class is noticeably larger than the “Yes” class, indicating a moderate class imbalance. This imbalance is important because many machine learning algorithms tend to favor the majority class, which can lead to poor detection of the minority “Yes” cases. Recognizing this early helps guide the modeling process, as techniques such as stratified sampling, SMOTE, or adjusted evaluation metrics may be required to ensure fair and reliable model performance.
+
+### Check for Outliers
+
+```{r, message=FALSE, warning=FALSE}
+# Boxplot to identify outliers in Income
+ggplot(df, aes(y = Income)) +
+  geom_boxplot(fill = "maroon") +
+  labs(title = "Boxplot of Income", y = "Income") +
+  theme_minimal()
+```
+
+A boxplot is used to visually inspect potential outliers in the Income variable. Outliers appear as points outside the whiskers and may represent unusually high or low income levels. Outlier detection helps determine whether extreme values should be kept, capped, or removed depending on their impact on model performance.
+
+```{r, message=FALSE, warning=FALSE}
+# Mathematical Outlier Detection using IQR
+Q1 <- quantile(df$Income, 0.25)
+Q3 <- quantile(df$Income, 0.75)
+IQR_value <- IQR(df$Income)
+
+lower_bound <- Q1 - 1.5 * IQR_value
+upper_bound <- Q3 + 1.5 * IQR_value
+
+sum(df$Income < lower_bound | df$Income > upper_bound)
+```
+
+The IQR method identified 5,157 income values as statistical outliers, representing roughly 1.2% of all observations. This is expected because income data is commonly right-skewed and naturally contains extreme high values. Since tree-based models are robust to outliers and income variation may hold meaningful information, outliers will be retained unless they negatively affect model performance during training.
+
+```{r, message=FALSE, warning=FALSE}
+# Outlier Detection Using Z-Scores
+income_z <- scale(df$Income)
+sum(abs(income_z) > 3)  
+```
+
+The Z-score method identified 3,868 values more than three standard deviations from the mean. This count is lower than the IQR estimate because Z-scores assume normality, while Income is strongly right-skewed. As a result, Z-scores may underestimate outliers in skewed data, making the IQR method more appropriate for this feature.
+
+Although the Income variable contains statistical outliers based on IQR and Z-score methods, they are retained in the dataset. Income is naturally right-skewed in real-world populations, and high-income values represent meaningful variation rather than errors. Additionally, the machine learning models used in this project—especially decision trees and random forests—are robust to outliers. Removing these values would reduce important information without improving model performance.
+
+## Data Preparation
+### Convert Variables to Appropriate Types
+
+```{r, message=FALSE, warning=FALSE}
+# Ensure Income is numeric
+df$Income <- as.numeric(df$Income)
+
+# Convert all remaining character columns to factors
+df <- df %>%
+mutate(across(where(is.character), as.factor))
+
+# Check structure after conversion
+str(df)
+```
+
+The Income variable is converted to numeric, and all remaining character columns are converted to factors. This ensures that categorical features are treated as factors and that numeric features are stored in the correct format, which is required for modeling functions in caret and for algorithms such as logistic regression, decision trees, and random forests.
+
+### Create Training and Testing Sets
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+
+# Stratified train/test split based on the target
+train_index <- createDataPartition(df$History.of.Mental.Illness,
+p = 0.8,
+list = FALSE)
+
+train_data <- df[train_index, ]
+test_data  <- df[-train_index, ]
+
+# Check class proportions in each set
+prop.table(table(train_data$History.of.Mental.Illness))
+prop.table(table(test_data$History.of.Mental.Illness))
+```
+
+A stratified train/test split ensures that the proportions of the target classes (“Yes” vs. “No”) remain the same in both the training and testing datasets. This is important because the original dataset is imbalanced, with more “No” cases than “Yes” cases. If a normal random split were used, one of the sets might accidentally end up with far fewer “Yes” cases, hurting model training and reducing the reliability of performance evaluation. Stratification preserves the class ratio, making the models more stable and preventing bias toward the majority class.
+
+The class proportions in both the training and testing sets are nearly identical:
+Training set: 69.59% No, 30.41% Yes  
+Testing set: 69.59% No, 30.41% Yes  
+This confirms that the stratified split worked correctly and that both sets accurately represent the original class distribution. The dataset is now ready for encoding and model preparation.
+
+### Encode Categorical Variables
+
+```{r, message=FALSE, warning=FALSE}
+# Create dummy-encoded predictors; the target is excluded from encoding
+dummy_model <- dummyVars(History.of.Mental.Illness ~ ., data = train_data)
+
+train_numeric <- data.frame(predict(dummy_model, newdata = train_data))
+test_numeric  <- data.frame(predict(dummy_model, newdata = test_data))
+
+# Add the target back to each set
+train_numeric$History.of.Mental.Illness <- train_data$History.of.Mental.Illness
+test_numeric$History.of.Mental.Illness  <- test_data$History.of.Mental.Illness
+```
+
+This step converts all predictor variables into numerical dummy variables while keeping the target variable (History.of.Mental.Illness) separate. This allows algorithms that require numeric inputs to use the encoded predictors, while the target remains a factor for classification.
+
+### Scale/ Standardize Numeric Variables
+
+```{r, message=FALSE, warning=FALSE}
+# Scale only predictor variables
+preprocess_model <- preProcess(train_numeric[, -ncol(train_numeric)], 
+                               method = c("center", "scale"))
+
+train_scaled <- predict(preprocess_model, train_numeric)
+test_scaled  <- predict(preprocess_model, test_numeric)
+
+# Check structure
+str(train_scaled)
+```
+
+Numeric predictors are standardized while the target variable is kept separate and unscaled. This ensures that all features used for modeling are on a comparable scale without corrupting the binary outcome needed for classification.
+
+### Baseline Model
+
+```{r, message=FALSE, warning=FALSE}
+# Find majority class
+majority_class <- names(which.max(table(train_data$History.of.Mental.Illness)))
+
+# Predict baseline on test set
+baseline_pred <- rep(majority_class, nrow(test_data))
+
+# Baseline accuracy
+baseline_accuracy <- mean(baseline_pred == test_data$History.of.Mental.Illness)
+baseline_accuracy
+```
+
+A baseline model is created to establish the minimum performance that any machine learning model must outperform to be considered useful. Since the dataset is imbalanced, the majority class is “No.” The baseline model predicts “No” for every observation in the test set, resulting in an accuracy of about 69.6%. This accuracy may seem high, but it is misleading because the model completely fails to detect the minority “Yes” class. All trained models will later be compared against this baseline to ensure they provide meaningful predictive value.
+
+## Modeling
+### Train Model 1: Logistic Regression
+
+```{r, message=FALSE, warning=FALSE}
+# Fit logistic regression using the factor target
+log_model <- glm(History.of.Mental.Illness ~ ., 
+                 data = train_scaled,
+                 family = "binomial")
+
+# Predict probabilities on the test set
+log_pred_prob <- predict(log_model, newdata = test_scaled, type = "response")
+
+# Convert probabilities to class labels (Yes/No)
+log_pred <- ifelse(log_pred_prob > 0.5, "Yes", "No") %>%
+  factor(levels = c("No", "Yes"))
+
+# Evaluate model performance
+conf_mat_log <- confusionMatrix(log_pred, test_scaled$History.of.Mental.Illness)
+conf_mat_log
+```
+
+The logistic regression model predicts every case as “No,” meaning it never identifies individuals with a history of mental illness. Although the overall accuracy appears high (69.6%), this is only because the dataset is imbalanced and the majority class is “No.” The model’s specificity is 0, meaning it completely fails to detect the “Yes” cases. This outcome shows that logistic regression, without additional techniques such as class balancing or threshold adjustment, is not effective for this prediction task.
+
+The logistic regression model performs no better than the baseline and completely fails to identify the “Yes” class. This indicates that logistic regression is not capturing meaningful patterns in the data—likely because of non-linear relationships and high-dimensional dummy-encoded predictors. To improve model performance, the next step is to train tree-based models such as Decision Trees and Random Forests. These models naturally handle categorical patterns, interactions, and non-linear relationships, making them stronger candidates for this dataset. The project will now proceed by training and evaluating a Decision Tree model using the same scaled and encoded training data.
+
+### Train Model 2: Decision Tree
+
+```{r, message=FALSE, warning=FALSE}
+# Train a decision tree model
+set.seed(123)
+
+tree_ctrl <- trainControl(
+method = "cv",
+number = 5
+)
+
+tree_model <- train(
+History.of.Mental.Illness ~ .,
+data = train_data,
+method = "rpart",
+trControl = tree_ctrl,
+metric = "Accuracy"
+)
+
+tree_model
+```
+
+The decision tree model was trained using 5-fold cross-validation, and caret tested several complexity parameter (cp) values to identify the best level of pruning. The results show that accuracy is almost identical across all tested cp values (around 69.3%), meaning the tree’s performance changes very little with additional pruning. The best-performing model, selected automatically by caret, used the smallest cp value tested (cp = 3.725412e-05), which produces the least-pruned tree. However, even at its best, the decision tree achieves an accuracy only slightly above the baseline (69.6%) and shows a very low Kappa value, indicating that the model does not meaningfully distinguish between the “Yes” and “No” classes. This suggests that a simple decision tree struggles to capture the underlying patterns in the data, likely due to class imbalance and the complexity of the relationships among predictors.
+
+```{r, message=FALSE, warning=FALSE}
+# Predict on the test set
+tree_pred <- predict(tree_model, newdata = test_data)
+
+# Evaluate performance with confusion matrix
+conf_mat_tree <- confusionMatrix(tree_pred,
+test_data$History.of.Mental.Illness,
+positive = "Yes")
+conf_mat_tree
+```
+
+The decision tree’s test-set confusion matrix shows that the model predicts every observation as “No,” meaning it completely fails to identify any individuals with a history of mental illness. As a result, the model reaches the same accuracy as the baseline (about 69.6%), only because “No” is the majority class in the dataset. However, sensitivity for the “Yes” class is 0%, indicating that the tree did not learn any meaningful splits that separate the two classes. This outcome is common when a dataset has class imbalance and when predictors are weakly separable. Overall, the decision tree performs no better than the baseline and provides no useful predictive ability for the minority (Yes) class.
+
+### Train Model 3: Random Forest
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+
+rf_ctrl <- trainControl(
+  method = "cv",
+  number = 3,       
+  sampling = "up"     
+)
+
+# Select a small number of candidate mtry values
+rf_grid <- expand.grid(
+  mtry = c(3, 5, 7)
+)
+
+# Train Random Forest on the original training data (Not dummy encoded)
+rf_model <- train(
+  History.of.Mental.Illness ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = rf_ctrl,
+  tuneGrid = rf_grid,
+  ntree = 100         
+)
+
+rf_model
+```
+
+The Random Forest model was trained using 3-fold cross-validation instead of the typical 5- or 10-fold approach. This reduced the computational load significantly, allowing the model to run faster on a very large dataset of more than 330,000 samples. Upsampling was applied within each fold to help the model see more minority “Yes” cases and learn patterns that distinguish them from the majority “No” cases.
+Caret evaluated three different values of mtry (the number of variables randomly sampled at each split). Across these settings, accuracy remained relatively modest, ranging from about 58% to 63%. The best accuracy was obtained with mtry = 7, which was automatically selected as the final model. However, the Kappa values remain low across all settings, indicating that, although the model improves slightly compared to Logistic Regression and the Decision Tree, it still struggles to meaningfully separate the two classes because of the strong class imbalance in the data.
+
+```{r, message=FALSE, warning=FALSE}
+# Evaluate Random Forest on Test Data
+rf_pred <- predict(rf_model, newdata = test_data)
+
+# Confusion Matrix
+conf_mat_rf <- confusionMatrix(rf_pred,
+                               test_data$History.of.Mental.Illness,
+                               positive = "Yes")
+
+conf_mat_rf
+```
+
+The Random Forest model performs better than the logistic regression and decision tree models because it is finally able to identify some “Yes” cases. Its sensitivity is 32.7%, meaning it detects about one-third of individuals with a history of mental illness, while the earlier models detected none. However, the overall accuracy (61.9%) is lower than the baseline because the model trades accuracy for better minority-class detection. The specificity (74.7%) shows that the model is still reasonably good at identifying “No” cases. The relatively low Kappa value indicates weak agreement beyond chance, suggesting that the model still struggles to fully separate the two classes. Despite this, Random Forest provides the strongest performance so far because it begins to learn patterns that help predict the minority “Yes” class.
+
+### Train Model 4: k-Nearest Neighbors (kNN)
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+
+# Create a smaller stratified training sample for kNN to run faster
+knn_index <- createDataPartition(
+  train_numeric$History.of.Mental.Illness,
+  p = 0.10,      
+  list = FALSE
+)
+
+knn_train <- train_numeric[knn_index, ]
+
+# Separate predictors (X) and target (y)
+x_knn_train <- knn_train %>% select(-History.of.Mental.Illness)
+y_knn_train <- knn_train$History.of.Mental.Illness
+
+x_knn_test  <- test_numeric %>% select(-History.of.Mental.Illness)
+y_knn_test  <- test_numeric$History.of.Mental.Illness
+
+# Make sure the positive class is "Yes"
+y_knn_train <- relevel(y_knn_train, ref = "No")
+y_knn_test  <- relevel(y_knn_test, ref = "No")
+
+# Set up fast cross-validation and metric
+knn_ctrl <- trainControl(
+  method = "cv",
+  number = 3,             
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# Small tuning grid for k values
+knn_grid <- expand.grid(
+  k = c(5, 11, 21)
+)
+
+# Train kNN model with centering and scaling
+set.seed(123)
+knn_model <- train(
+  x = x_knn_train,
+  y = y_knn_train,
+  method = "knn",
+  trControl = knn_ctrl,
+  tuneGrid = knn_grid,
+  preProcess = c("center", "scale"),
+  metric = "ROC"        
+)
+
+knn_model
+
+# Evaluate kNN on the full test set
+knn_pred <- predict(knn_model, newdata = x_knn_test)
+
+conf_mat_knn <- confusionMatrix(
+  knn_pred,
+  y_knn_test,
+  positive = "Yes"
+)
+
+conf_mat_knn
+```
+
+The kNN model was trained on a 10% stratified subsample of the training data to reduce runtime, with k tuned over {5, 11, 21} and optimized using ROC. The best model used k = 21. On the test set, kNN achieved an accuracy of about 68.2%, which is slightly below the baseline accuracy of always predicting “No” (69.6%). The model shows very high specificity (95.1%), meaning it correctly identifies most of the “No” cases, but sensitivity for the “Yes” class is only 6.6%, so it misses most individuals with a history of mental illness. This trade-off indicates that, in its current form, kNN is still biased toward the majority class and provides only limited improvement in detecting the minority “Yes” class.
+
+## Model Evaluation and Comparison
+
+### Comparison Table
+
+```{r, message=FALSE, warning=FALSE}
+model_results <- data.frame(
+  Model = c("Logistic Regression", "Decision Tree", "Random Forest", "kNN"),
+  Accuracy = c(
+    conf_mat_log$overall["Accuracy"],
+    conf_mat_tree$overall["Accuracy"],
+    conf_mat_rf$overall["Accuracy"],
+    conf_mat_knn$overall["Accuracy"]
+  ),
+  Sensitivity = c(
+    conf_mat_log$byClass["Sensitivity"],
+    conf_mat_tree$byClass["Sensitivity"],
+    conf_mat_rf$byClass["Sensitivity"],
+    conf_mat_knn$byClass["Sensitivity"]
+  ),
+  Specificity = c(
+    conf_mat_log$byClass["Specificity"],
+    conf_mat_tree$byClass["Specificity"],
+    conf_mat_rf$byClass["Specificity"],
+    conf_mat_knn$byClass["Specificity"]
+  ),
+  F1 = c(
+    conf_mat_log$byClass["F1"],
+    conf_mat_tree$byClass["F1"],
+    conf_mat_rf$byClass["F1"],
+    conf_mat_knn$byClass["F1"]
+  )
+)
+
+model_results
+```
+
+The comparison table highlights how each model performed on the task of predicting whether a person has a history of mental illness. Logistic Regression and the Decision Tree show the highest accuracy (≈69.6%), but this is misleading because both models predict every case as “No,” resulting in 0% sensitivity and failing to identify any positive cases. Random Forest performs better at detecting the “Yes” class (32.7% sensitivity), but its overall accuracy drops because it makes more mistakes on the majority class. The kNN model reaches accuracy close to the baseline (68.1%) and has very high specificity (95.1%), but again struggles with sensitivity, detecting only 6.5% of positive cases. Overall, the table shows that all models are heavily biased toward the majority “No” class, and none are able to reliably identify individuals with a history of mental illness.
+
+# Conclusion
+
+Overall, the results of the four machine learning models show that predicting a history of mental illness using demographic and lifestyle factors is a challenging task for this dataset. Both Logistic Regression and the Decision Tree achieved the highest accuracy (≈69.6%), but this performance is misleading because both models predicted every case as “No,” completely failing to identify individuals who actually had a history of mental illness. The Random Forest improved sensitivity to 32.7% and produced more balanced predictions, but the overall accuracy dropped to about 61.9%. The kNN model performed slightly better than Random Forest in overall accuracy (68.1%) but detected very few positive cases, with a sensitivity of only 6.5%. Across all models, sensitivity (the ability to identify “Yes” cases) remained extremely low, showing that class imbalance and weak separability between classes are significant challenges in this dataset.
+
+These results indicate that while the models can easily predict the majority class, they struggle to learn meaningful patterns for minority outcomes. This suggests that the predictors may not be strong indicators of mental illness, or that the imbalance and high dimensionality limit model learning. Future improvements could include applying SMOTE or other resampling methods to handle imbalance more effectively, performing feature selection or dimensionality reduction to simplify the models, tuning more advanced algorithms such as XGBoost or gradient boosting, and exploring different probability thresholds to improve sensitivity. Additional data collection, including clinical, psychological, or survey-based mental health indicators, could also greatly enhance model performance. Despite the limitations, this project demonstrates a complete machine-learning workflow and provides a clear understanding of how different models behave under challenging real-world conditions.
